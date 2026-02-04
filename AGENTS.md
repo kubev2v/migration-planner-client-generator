@@ -28,9 +28,11 @@ This is a **GitOps repository** providing a reusable GitHub Actions workflow for
    - Triggered via `workflow_call` from external repositories
    - Two jobs: `authorize` (security check) → `generate-and-publish`
    - Uses `openapi-generators/openapitools-generator-action@v1`
+   - Output directory: `generated-client`
 
 2. **Authorization Model**
-   - Uses `jq` for exact-match validation against `ALLOWED_REPOS` secret
+   - **Self-authorization**: This repository is automatically authorized (for CI/testing)
+   - External repos validated via `jq` exact-match against `ALLOWED_REPOS` secret
    - Secret contains JSON array: `["org/repo1", "org/repo2"]`
    - Fails fast before any generation occurs
 
@@ -43,6 +45,7 @@ These settings are intentionally hardcoded and must match [kubev2v/migration-pla
 | Setting | Value | Reason |
 |---------|-------|--------|
 | `generator` | `typescript-fetch` | Standardized across organization |
+| `-o` (output) | `generated-client` | Consistent, generator-agnostic folder name |
 | `ensureUniqueParams` | `true` | Required for API compatibility |
 | `supportsES6` | `true` | Modern JavaScript support |
 | `withInterfaces` | `true` | TypeScript interface generation |
@@ -63,7 +66,7 @@ These settings are intentionally hardcoded and must match [kubev2v/migration-pla
 ### Required Secrets
 
 **In this repository:**
-- `ALLOWED_REPOS` - JSON array of authorized repository names
+- `ALLOWED_REPOS` - JSON array of authorized external repository names (this repo is auto-authorized)
 - `NPM_TOKEN` - npm access token
 
 **In calling repositories:**
@@ -143,6 +146,8 @@ make clean
 
 ### Debugging Authorization Failures
 
-1. Check `ALLOWED_REPOS` secret is valid JSON
-2. Verify exact repository name match (case-sensitive)
-3. Ensure calling workflow passes `ALLOWED_REPOS` secret through
+1. If calling from this repo: Should auto-authorize; check workflow syntax
+2. If calling from external repo:
+   - Check `ALLOWED_REPOS` secret is valid JSON
+   - Verify exact repository name match (case-sensitive)
+   - Ensure calling workflow passes `ALLOWED_REPOS` secret through

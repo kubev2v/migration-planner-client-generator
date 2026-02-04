@@ -5,6 +5,11 @@
 # and publishes it to npm. It can be called from other repositories using
 # the workflow_call trigger.
 #
+# Output: Generated client is placed in the 'generated-client' directory
+#
+# Authorization: Calls from this repository are automatically authorized.
+# External repositories must be listed in the ALLOWED_REPOS secret.
+#
 # Repository: kubev2v/migration-planner-client-generator
 # =============================================================================
 
@@ -47,6 +52,9 @@ jobs:
   # ===========================================================================
   # Job 1: Authorization Check
   # ===========================================================================
+  # This repository is automatically authorized (for CI/testing).
+  # External repositories must be listed in ALLOWED_REPOS secret.
+  # ===========================================================================
   authorize:
     name: Verify Authorization
     runs-on: ubuntu-latest
@@ -58,8 +66,16 @@ jobs:
         env:
           ALLOWED_REPOS: ${{ secrets.ALLOWED_REPOS }}
           CALLER_REPO: ${{ github.repository }}
+          THIS_REPO: "kubev2v/migration-planner-client-generator"
         run: |
-          # Validate secret is configured
+          # Allow calls from this repository (for CI/testing)
+          if [ "$CALLER_REPO" = "$THIS_REPO" ]; then
+            echo "authorized=true" >> $GITHUB_OUTPUT
+            echo "✅ Repository is authorized (same-repo call)"
+            exit 0
+          fi
+          
+          # For external callers, validate ALLOWED_REPOS secret
           if [ -z "$ALLOWED_REPOS" ]; then
             echo "::error::ALLOWED_REPOS secret is not configured"
             exit 1

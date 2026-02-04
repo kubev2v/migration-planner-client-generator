@@ -68,6 +68,7 @@ The workflow uses hardcoded generator settings that **cannot be modified by call
 | Setting | Value |
 |---------|-------|
 | Generator | `typescript-fetch` |
+| Output Directory | `generated-client` |
 | `ensureUniqueParams` | `true` |
 | `supportsES6` | `true` |
 | `withInterfaces` | `true` |
@@ -79,19 +80,22 @@ These settings match the configuration in [kubev2v/migration-planner-ui](https:/
 
 ### How Authorization Works
 
-The workflow includes a mandatory authorization check that validates the calling repository against an allowlist stored as a repository secret.
+The workflow includes a mandatory authorization check before generating and publishing clients.
 
-1. **Secret-based Allowlist**: The `ALLOWED_REPOS` secret contains a JSON array of authorized repository names
-2. **Exact Match**: Uses `jq` for precise string matching (no partial matches)
-3. **Fail-Fast**: Unauthorized requests are rejected before any generation occurs
+1. **Self-Authorization**: Calls from this repository (`kubev2v/migration-planner-client-generator`) are automatically authorized for CI/testing purposes
+2. **Secret-based Allowlist**: External repositories must be listed in the `ALLOWED_REPOS` secret (JSON array)
+3. **Exact Match**: Uses `jq` for precise string matching (no partial matches)
+4. **Fail-Fast**: Unauthorized requests are rejected before any generation occurs
 
 ### Configuring Authorization
 
-Set the `ALLOWED_REPOS` secret in this repository with a JSON array:
+Set the `ALLOWED_REPOS` secret in this repository with a JSON array of external repositories:
 
 ```json
 ["kubev2v/migration-planner", "kubev2v/migration-planner-ui"]
 ```
+
+> **Note**: You don't need to add this repository to `ALLOWED_REPOS` - it's automatically authorized.
 
 ### Security Features
 
@@ -138,6 +142,9 @@ The repository includes a `.actrc` file with default settings:
 │       ├── generate-and-publish.yml   # Reusable workflow
 │       └── test.yml                   # CI test workflow
 ├── .actrc                             # act-cli configuration
+├── .gitignore                         # Ignores generated-client/, secrets, etc.
+├── Makefile                           # Local testing commands (make test, make clean)
+├── AGENTS.md                          # AI agent guidelines
 ├── LICENSE                            # Apache-2.0
 └── README.md                          # This file
 ```
