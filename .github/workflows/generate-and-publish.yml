@@ -125,15 +125,23 @@ jobs:
       - name: Configure Package
         working-directory: typescript-fetch-client
         run: |
+          echo "📦 Initializing package.json..."
+          npm init -y
+          
           echo "📦 Configuring package metadata..."
           npm pkg set name="${{ inputs.package-name }}"
           npm pkg set version="${{ inputs.package-version }}"
           npm pkg set license="Apache-2.0"
+          npm pkg set main="index.ts"
+          npm pkg set types="index.ts"
           npm pkg set repository.type="git"
           npm pkg set repository.url="https://github.com/${{ github.repository }}"
+          npm pkg set files[]="*.ts"
+          npm pkg set files[]="apis/"
+          npm pkg set files[]="models/"
           
           echo "Package configuration:"
-          cat package.json | jq '{name, version, license}'
+          cat package.json | jq '{name, version, license, main}'
 
       # -----------------------------------------------------------------------
       # Step 5: Install dependencies and build

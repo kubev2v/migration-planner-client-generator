@@ -54,6 +54,13 @@ check-act:
 # Testing
 # -----------------------------------------------------------------------------
 
+# Common act flags for Docker-in-Docker support
+ACT_FLAGS = --secret-file .secrets \
+	--bind \
+	--container-options "--privileged" \
+	--container-daemon-socket /var/run/docker.sock \
+	-P ubuntu-latest=catthehacker/ubuntu:act-latest
+
 # Run test workflow
 test: check-act
 	@if [ ! -f .secrets ]; then \
@@ -61,7 +68,7 @@ test: check-act
 		exit 1; \
 	fi
 	@echo "🧪 Running test workflow..."
-	act push -W .github/workflows/test.yml --secret-file .secrets
+	act push -W .github/workflows/test.yml $(ACT_FLAGS)
 
 # Run test workflow with verbose output
 test-verbose: check-act
@@ -70,7 +77,7 @@ test-verbose: check-act
 		exit 1; \
 	fi
 	@echo "🧪 Running test workflow (verbose)..."
-	act push -W .github/workflows/test.yml --secret-file .secrets --verbose
+	act push -W .github/workflows/test.yml $(ACT_FLAGS) --verbose
 
 # Run with specific container architecture (useful for Apple Silicon)
 test-arm64: check-act
@@ -79,7 +86,7 @@ test-arm64: check-act
 		exit 1; \
 	fi
 	@echo "🧪 Running test workflow (ARM64)..."
-	act push -W .github/workflows/test.yml --secret-file .secrets --container-architecture linux/arm64
+	act push -W .github/workflows/test.yml $(ACT_FLAGS) --container-architecture linux/arm64
 
 # -----------------------------------------------------------------------------
 # Cleanup
