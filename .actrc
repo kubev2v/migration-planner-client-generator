@@ -1,0 +1,19 @@
+# =============================================================================
+# act-cli Configuration
+# =============================================================================
+# Default settings for running GitHub Actions locally with act
+# https://github.com/nektos/act
+#
+# Usage:
+#   act push -W .github/workflows/test.yml
+#
+# =============================================================================
+
+# Use medium-sized Ubuntu image (includes most tools)
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+
+# Default secrets file (create .secrets file with your test secrets)
+--secret-file .secrets
+
+# Verbose output for debugging
+# --verbose
