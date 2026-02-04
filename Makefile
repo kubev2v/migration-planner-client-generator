@@ -95,9 +95,7 @@ test-arm64: check-act
 # Remove generated artifacts
 clean:
 	@echo "🧹 Cleaning up generated artifacts..."
-	rm -rf typescript-fetch-client/
-	rm -rf *-client/
-	rm -f openapi-spec.yaml openapi-spec.json
+	rm -rf generated-client/
 	rm -rf .act/
 	@echo "✅ Cleanup complete"
 

@@ -91,63 +91,45 @@ jobs:
 
     steps:
       # -----------------------------------------------------------------------
-      # Step 1: Download OpenAPI spec
-      # -----------------------------------------------------------------------
-      - name: Download OpenAPI Specification
-        run: |
-          echo "📥 Downloading OpenAPI spec from: ${{ inputs.openapi-spec-url }}"
-          curl -sSL "${{ inputs.openapi-spec-url }}" -o openapi-spec.yaml
-          echo "✅ OpenAPI spec downloaded successfully"
-
-      # -----------------------------------------------------------------------
-      # Step 2: Generate the client using OpenAPI Generator
+      # Step 1: Generate the client using OpenAPI Generator
       # -----------------------------------------------------------------------
       - name: Generate OpenAPI Client
         uses: openapi-generators/openapitools-generator-action@v1
         with:
           generator: typescript-fetch
-          openapi-file: openapi-spec.yaml
+          openapi-url: ${{ inputs.openapi-spec-url }}
           command-args: >-
-            --additional-properties=ensureUniqueParams=true,supportsES6=true,withInterfaces=true,importFileExtension=.js
+            -o generated-client
+            --additional-properties=npmName=${{ inputs.package-name }},npmVersion=${{ inputs.package-version }},ensureUniqueParams=true,supportsES6=true,withInterfaces=true,importFileExtension=.js
 
       # -----------------------------------------------------------------------
-      # Step 3: Setup Node.js environment
+      # Step 2: Setup Node.js environment
       # -----------------------------------------------------------------------
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '20'
           registry-url: ${{ inputs.npm-registry }}
 
       # -----------------------------------------------------------------------
-      # Step 4: Configure package metadata
+      # Step 3: Configure additional package metadata
       # -----------------------------------------------------------------------
-      - name: Configure Package
-        working-directory: typescript-fetch-client
+      - name: Configure Package Metadata
+        working-directory: generated-client
         run: |
-          echo "📦 Initializing package.json..."
-          npm init -y
-          
-          echo "📦 Configuring package metadata..."
-          npm pkg set name="${{ inputs.package-name }}"
-          npm pkg set version="${{ inputs.package-version }}"
+          echo "📦 Adding additional package metadata..."
           npm pkg set license="Apache-2.0"
-          npm pkg set main="index.ts"
-          npm pkg set types="index.ts"
           npm pkg set repository.type="git"
           npm pkg set repository.url="https://github.com/${{ github.repository }}"
-          npm pkg set files[]="*.ts"
-          npm pkg set files[]="apis/"
-          npm pkg set files[]="models/"
           
-          echo "Package configuration:"
-          cat package.json | jq '{name, version, license, main}'
+          echo "📦 Package configuration:"
+          cat package.json | jq '{name, version, license, main, repository}'
 
       # -----------------------------------------------------------------------
-      # Step 5: Install dependencies and build
+      # Step 4: Install dependencies and build
       # -----------------------------------------------------------------------
       - name: Install & Build
-        working-directory: typescript-fetch-client
+        working-directory: generated-client
         run: |
           echo "📦 Installing dependencies..."
           npm install
@@ -158,11 +140,11 @@ jobs:
           echo "✅ Build completed successfully"
 
       # -----------------------------------------------------------------------
-      # Step 6: Publish to npm (unless dry-run)
+      # Step 5: Publish to npm (unless dry-run)
       # -----------------------------------------------------------------------
       - name: Publish to npm
         if: ${{ inputs.dry-run != true }}
-        working-directory: typescript-fetch-client
+        working-directory: generated-client
         run: |
           echo "🚀 Publishing ${{ inputs.package-name }}@${{ inputs.package-version }} to npm..."
           npm publish --access public
@@ -183,7 +165,7 @@ jobs:
           echo "To publish for real, re-run without the dry-run flag."
 
       # -----------------------------------------------------------------------
-      # Step 7: Create summary
+      # Step 6: Create summary
       # -----------------------------------------------------------------------
       - name: Job Summary
         run: |
