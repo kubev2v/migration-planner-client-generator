@@ -1,0 +1,219 @@
+# =============================================================================
+# Reusable Workflow: Generate and Publish OpenAPI Client
+# =============================================================================
+# This workflow generates a TypeScript client from an OpenAPI specification
+# and publishes it to npm. It can be called from other repositories using
+# the workflow_call trigger.
+#
+# Output: Generated client is placed in the 'generated-client' directory
+#
+# Authorization: Calls from this repository are automatically authorized.
+# External repositories must be listed in the ALLOWED_REPOS secret.
+#
+# Publishing Authentication (in order of precedence):
+#   1. npm Trusted Publishing (OIDC) - preferred, no long-lived tokens needed
+#      - Requires id-token: write permission in calling workflow
+#      - Requires Trusted Publisher configured on npmjs.com
+#      - See: https://docs.npmjs.com/trusted-publishers
+#   2. NPM_TOKEN fallback - used when OIDC is unavailable (e.g., local testing)
+#      - Provide NPM_TOKEN secret for local testing with act-cli
+#      - npm CLI automatically prefers OIDC when available
+#
+# Local Testing with act-cli:
+#   OIDC doesn't work locally. To test publishing with act:
+#   1. Add a real NPM_TOKEN to your .secrets file
+#   2. The workflow will automatically fall back to token-based auth
+#
+# Repository: kubev2v/migration-planner-client-generator
+# =============================================================================
+
+name: Generate and Publish OpenAPI Client
+
+on:
+  workflow_call:
+    inputs:
+      openapi-spec-url:
+        description: 'URL to the OpenAPI specification file'
+        required: true
+        type: string
+      package-name:
+        description: 'npm package name (e.g., @scope/package-name)'
+        required: true
+        type: string
+      package-version:
+        description: 'Package version to publish (semver)'
+        required: true
+        type: string
+      npm-registry:
+        description: 'npm registry URL'
+        required: false
+        type: string
+        default: 'https://registry.npmjs.org'
+      dry-run:
+        description: 'Skip npm publish (for testing)'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      ALLOWED_REPOS:
+        description: 'JSON array of authorized repository names'
+        required: true
+      NPM_TOKEN:
+        description: 'npm access token - fallback for when OIDC is unavailable (local testing with act-cli)'
+        required: false
+
+jobs:
+  # ===========================================================================
+  # Job 1: Authorization Check
+  # ===========================================================================
+  # This repository is automatically authorized (for CI/testing).
+  # External repositories must be listed in ALLOWED_REPOS secret.
+  # ===========================================================================
+  authorize:
+    name: Verify Authorization
+    runs-on: ubuntu-latest
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - name: Verify caller is authorized
+        id: check
+        env:
+          ALLOWED_REPOS: ${{ secrets.ALLOWED_REPOS }}
+          CALLER_REPO: ${{ github.repository }}
+          THIS_REPO: "kubev2v/migration-planner-client-generator"
+        run: |
+          # Allow calls from this repository (for CI/testing)
+          if [ "$CALLER_REPO" = "$THIS_REPO" ]; then
+            echo "authorized=true" >> $GITHUB_OUTPUT
+            echo "✅ Repository is authorized (same-repo call)"
+            exit 0
+          fi
+          
+          # For external callers, validate ALLOWED_REPOS secret
+          if [ -z "$ALLOWED_REPOS" ]; then
+            echo "::error::ALLOWED_REPOS secret is not configured"
+            exit 1
+          fi
+          
+          # Validate secret is valid JSON
+          if ! echo "$ALLOWED_REPOS" | jq empty 2>/dev/null; then
+            echo "::error::ALLOWED_REPOS secret is not valid JSON"
+            exit 1
+          fi
+          
+          # Check if caller repo is in the allowed list (exact match)
+          if echo "$ALLOWED_REPOS" | jq -e --arg repo "$CALLER_REPO" 'index($repo) != null' > /dev/null; then
+            echo "authorized=true" >> $GITHUB_OUTPUT
+            echo "✅ Repository is authorized"
+          else
+            echo "::error::Unauthorized repository attempted to call this workflow"
+            exit 1
+          fi
+
+  # ===========================================================================
+  # Job 2: Generate and Publish
+  # ===========================================================================
+  generate-and-publish:
+    name: Generate & Publish Client
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for npm Trusted Publishing (OIDC)
+      contents: read
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Generate the client using OpenAPI Generator
+      # -----------------------------------------------------------------------
+      - name: Generate OpenAPI Client
+        uses: openapi-generators/openapitools-generator-action@v1
+        with:
+          generator: typescript-fetch
+          openapi-url: ${{ inputs.openapi-spec-url }}
+          command-args: >-
+            -o generated-client
+            --additional-properties=npmName=${{ inputs.package-name }},npmVersion=${{ inputs.package-version }},ensureUniqueParams=true,supportsES6=true,withInterfaces=true,importFileExtension=.js
+
+      # -----------------------------------------------------------------------
+      # Step 2: Setup Node.js environment
+      # -----------------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          registry-url: ${{ inputs.npm-registry }}
+
+      # -----------------------------------------------------------------------
+      # Step 3: Configure additional package metadata
+      # -----------------------------------------------------------------------
+      - name: Configure Package Metadata
+        working-directory: generated-client
+        run: |
+          echo "📦 Adding additional package metadata..."
+          npm pkg set license="Apache-2.0"
+          npm pkg set repository.type="git"
+          npm pkg set repository.url="https://github.com/${{ github.repository }}"
+          
+          echo "📦 Package configuration:"
+          cat package.json | jq '{name, version, license, main, repository}'
+
+      # -----------------------------------------------------------------------
+      # Step 4: Install dependencies and build
+      # -----------------------------------------------------------------------
+      - name: Install & Build
+        working-directory: generated-client
+        run: |
+          echo "📦 Installing dependencies..."
+          npm install
+          
+          echo "🔨 Building package..."
+          npm run build --if-present
+          
+          echo "✅ Build completed successfully"
+
+      # -----------------------------------------------------------------------
+      # Step 5: Publish to npm (unless dry-run)
+      # Authentication precedence:
+      #   1. OIDC (Trusted Publishing) - automatic on GitHub Actions
+      #   2. NODE_AUTH_TOKEN fallback - for local testing with act-cli
+      # npm CLI automatically prefers OIDC when available
+      # -----------------------------------------------------------------------
+      - name: Publish to npm
+        if: ${{ inputs.dry-run != true }}
+        working-directory: generated-client
+        run: |
+          echo "🚀 Publishing ${{ inputs.package-name }}@${{ inputs.package-version }} to npm..."
+          npm publish --access public
+          echo "✅ Package published successfully!"
+        env:
+          # Fallback for local testing - npm prefers OIDC when available
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry Run Summary
+        if: ${{ inputs.dry-run == true }}
+        run: |
+          echo "🧪 DRY RUN MODE - Package was NOT published"
+          echo ""
+          echo "Summary:"
+          echo "  Package: ${{ inputs.package-name }}"
+          echo "  Version: ${{ inputs.package-version }}"
+          echo "  Generator: typescript-fetch"
+          echo ""
+          echo "To publish for real, re-run without the dry-run flag."
+
+      # -----------------------------------------------------------------------
+      # Step 6: Create summary
+      # -----------------------------------------------------------------------
+      - name: Job Summary
+        run: |
+          echo "## 📦 OpenAPI Client Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Package Name | \`${{ inputs.package-name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | \`${{ inputs.package-version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Generator | \`typescript-fetch\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry Run | ${{ inputs.dry-run }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered By | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source Repo | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
