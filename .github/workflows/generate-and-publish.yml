@@ -1,0 +1,191 @@
+# =============================================================================
+# Reusable Workflow: Generate and Publish OpenAPI Client
+# =============================================================================
+# This workflow generates a TypeScript client from an OpenAPI specification
+# and publishes it to npm. It can be called from other repositories using
+# the workflow_call trigger.
+#
+# Repository: kubev2v/migration-planner-client-generator
+# =============================================================================
+
+name: Generate and Publish OpenAPI Client
+
+on:
+  workflow_call:
+    inputs:
+      openapi-spec-url:
+        description: 'URL to the OpenAPI specification file'
+        required: true
+        type: string
+      package-name:
+        description: 'npm package name (e.g., @scope/package-name)'
+        required: true
+        type: string
+      package-version:
+        description: 'Package version to publish (semver)'
+        required: true
+        type: string
+      npm-registry:
+        description: 'npm registry URL'
+        required: false
+        type: string
+        default: 'https://registry.npmjs.org'
+      dry-run:
+        description: 'Skip npm publish (for testing)'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      NPM_TOKEN:
+        description: 'npm access token for publishing'
+        required: true
+      ALLOWED_REPOS:
+        description: 'JSON array of authorized repository names'
+        required: true
+
+jobs:
+  # ===========================================================================
+  # Job 1: Authorization Check
+  # ===========================================================================
+  authorize:
+    name: Verify Authorization
+    runs-on: ubuntu-latest
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - name: Verify caller is authorized
+        id: check
+        env:
+          ALLOWED_REPOS: ${{ secrets.ALLOWED_REPOS }}
+          CALLER_REPO: ${{ github.repository }}
+        run: |
+          # Validate secret is configured
+          if [ -z "$ALLOWED_REPOS" ]; then
+            echo "::error::ALLOWED_REPOS secret is not configured"
+            exit 1
+          fi
+          
+          # Validate secret is valid JSON
+          if ! echo "$ALLOWED_REPOS" | jq empty 2>/dev/null; then
+            echo "::error::ALLOWED_REPOS secret is not valid JSON"
+            exit 1
+          fi
+          
+          # Check if caller repo is in the allowed list (exact match)
+          if echo "$ALLOWED_REPOS" | jq -e --arg repo "$CALLER_REPO" 'index($repo) != null' > /dev/null; then
+            echo "authorized=true" >> $GITHUB_OUTPUT
+            echo "✅ Repository is authorized"
+          else
+            echo "::error::Unauthorized repository attempted to call this workflow"
+            exit 1
+          fi
+
+  # ===========================================================================
+  # Job 2: Generate and Publish
+  # ===========================================================================
+  generate-and-publish:
+    name: Generate & Publish Client
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Download OpenAPI spec
+      # -----------------------------------------------------------------------
+      - name: Download OpenAPI Specification
+        run: |
+          echo "📥 Downloading OpenAPI spec from: ${{ inputs.openapi-spec-url }}"
+          curl -sSL "${{ inputs.openapi-spec-url }}" -o openapi-spec.yaml
+          echo "✅ OpenAPI spec downloaded successfully"
+
+      # -----------------------------------------------------------------------
+      # Step 2: Generate the client using OpenAPI Generator
+      # -----------------------------------------------------------------------
+      - name: Generate OpenAPI Client
+        uses: openapi-generators/openapitools-generator-action@v1
+        with:
+          generator: typescript-fetch
+          openapi-file: openapi-spec.yaml
+          command-args: >-
+            --additional-properties=ensureUniqueParams=true,supportsES6=true,withInterfaces=true,importFileExtension=.js
+
+      # -----------------------------------------------------------------------
+      # Step 3: Setup Node.js environment
+      # -----------------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: ${{ inputs.npm-registry }}
+
+      # -----------------------------------------------------------------------
+      # Step 4: Configure package metadata
+      # -----------------------------------------------------------------------
+      - name: Configure Package
+        working-directory: typescript-fetch-client
+        run: |
+          echo "📦 Configuring package metadata..."
+          npm pkg set name="${{ inputs.package-name }}"
+          npm pkg set version="${{ inputs.package-version }}"
+          npm pkg set license="Apache-2.0"
+          npm pkg set repository.type="git"
+          npm pkg set repository.url="https://github.com/${{ github.repository }}"
+          
+          echo "Package configuration:"
+          cat package.json | jq '{name, version, license}'
+
+      # -----------------------------------------------------------------------
+      # Step 5: Install dependencies and build
+      # -----------------------------------------------------------------------
+      - name: Install & Build
+        working-directory: typescript-fetch-client
+        run: |
+          echo "📦 Installing dependencies..."
+          npm install
+          
+          echo "🔨 Building package..."
+          npm run build --if-present
+          
+          echo "✅ Build completed successfully"
+
+      # -----------------------------------------------------------------------
+      # Step 6: Publish to npm (unless dry-run)
+      # -----------------------------------------------------------------------
+      - name: Publish to npm
+        if: ${{ inputs.dry-run != true }}
+        working-directory: typescript-fetch-client
+        run: |
+          echo "🚀 Publishing ${{ inputs.package-name }}@${{ inputs.package-version }} to npm..."
+          npm publish --access public
+          echo "✅ Package published successfully!"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry Run Summary
+        if: ${{ inputs.dry-run == true }}
+        run: |
+          echo "🧪 DRY RUN MODE - Package was NOT published"
+          echo ""
+          echo "Summary:"
+          echo "  Package: ${{ inputs.package-name }}"
+          echo "  Version: ${{ inputs.package-version }}"
+          echo "  Generator: typescript-fetch"
+          echo ""
+          echo "To publish for real, re-run without the dry-run flag."
+
+      # -----------------------------------------------------------------------
+      # Step 7: Create summary
+      # -----------------------------------------------------------------------
+      - name: Job Summary
+        run: |
+          echo "## 📦 OpenAPI Client Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Package Name | \`${{ inputs.package-name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | \`${{ inputs.package-version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Generator | \`typescript-fetch\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry Run | ${{ inputs.dry-run }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered By | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source Repo | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,30 @@
+# =============================================================================
+# Test Workflow: Validate Reusable Workflow
+# =============================================================================
+# This workflow tests the generate-and-publish reusable workflow by calling it
+# with a sample OpenAPI specification in dry-run mode.
+#
+# Repository: kubev2v/migration-planner-client-generator
+# =============================================================================
+
+name: Test Reusable Workflow
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test-generation:
+    name: Test Client Generation
+    uses: ./.github/workflows/generate-and-publish.yml
+    with:
+      openapi-spec-url: "https://petstore3.swagger.io/api/v3/openapi.json"
+      package-name: "@test/petstore-client"
+      package-version: "0.0.1-test"
+      dry-run: true
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      ALLOWED_REPOS: ${{ secrets.ALLOWED_REPOS }}
