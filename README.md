@@ -32,6 +32,11 @@ on:
         description: 'Version to publish'
         required: true
 
+# Required for npm Trusted Publishing (OIDC)
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   generate-client:
     uses: kubev2v/migration-planner-client-generator/.github/workflows/generate-and-publish.yml@main
@@ -39,9 +44,8 @@ jobs:
       openapi-spec-url: "https://raw.githubusercontent.com/your-org/your-repo/main/api/openapi.yaml"
       package-name: "@your-scope/api-client"
       package-version: ${{ inputs.version || '0.0.1' }}
-    secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-      ALLOWED_REPOS: ${{ secrets.ALLOWED_REPOS }}
+    # Required: passes OIDC permissions to the reusable workflow
+    secrets: inherit
 ```
 
 ### Workflow Inputs
@@ -54,12 +58,21 @@ jobs:
 | `npm-registry` | No | `https://registry.npmjs.org` | npm registry URL |
 | `dry-run` | No | `false` | Skip npm publish (for testing) |
 
+### npm Publishing Authentication
+
+This workflow uses **npm Trusted Publishing (OIDC)** as the primary authentication method:
+
+- **No long-lived npm tokens needed** - OIDC provides short-lived, workflow-specific credentials
+- Requires `id-token: write` permission in calling workflow
+- Requires [Trusted Publisher](https://docs.npmjs.com/trusted-publishers) configured on npmjs.com
+- Use `secrets: inherit` to pass OIDC permissions to the reusable workflow
+
 ### Required Secrets
 
-| Secret | Description |
-|--------|-------------|
-| `NPM_TOKEN` | npm access token with publish permissions |
-| `ALLOWED_REPOS` | JSON array of authorized repository names |
+| Secret | Required | Description |
+|--------|----------|-------------|
+| `ALLOWED_REPOS` | Yes | JSON array of authorized repository names |
+| `NPM_TOKEN` | No | Only needed for local testing with act-cli (OIDC fallback) |
 
 ## Generator Configuration
 
@@ -114,24 +127,39 @@ Use [act](https://github.com/nektos/act) to test GitHub Actions locally:
 # Install act (macOS)
 brew install act
 
-# Create a .secrets file with test secrets
-cat > .secrets << 'EOF'
-NPM_TOKEN=fake-token-for-testing
-ALLOWED_REPOS=["kubev2v/migration-planner-client-generator"]
-EOF
+# Setup secrets file (first time)
+make setup-secrets
 
-# Run the test workflow
-act push -W .github/workflows/test.yml
+# Run test workflow (dry-run mode - no npm publishing)
+make test
+
+# Run test workflow with actual npm publishing (requires real NPM_TOKEN)
+make test-publish
+
+# Cleanup generated files
+make clean
 ```
 
-### .actrc Configuration
+### Make Targets
 
-The repository includes a `.actrc` file with default settings:
+| Command | Description |
+|---------|-------------|
+| `make test` | Run workflow in dry-run mode (tests generation/build only) |
+| `make test-publish` | Run workflow with actual npm publishing + cleanup |
+| `make test-verbose` | Run workflow with verbose output |
+| `make setup-secrets` | Create `.secrets` file template |
+| `make clean` | Remove generated artifacts |
 
-```
--P ubuntu-latest=catthehacker/ubuntu:act-latest
---secret-file .secrets
-```
+### CI Feature Toggle
+
+The test workflow runs in **dry-run mode by default** to avoid npm rate limits.
+
+To enable actual npm publishing in CI:
+1. Go to Settings > Secrets and variables > Actions > Variables
+2. Add: `TEST_NPM_PUBLISH` = `true`
+3. Bump `TEST_PACKAGE_VERSION` in `test.yml` before each test
+
+When enabled, test packages are automatically unpublished after successful publish.
 
 ## Repository Structure
 

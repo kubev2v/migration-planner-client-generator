@@ -2,7 +2,17 @@
 # Test Workflow: Validate Reusable Workflow
 # =============================================================================
 # This workflow tests the generate-and-publish reusable workflow by calling it
-# with a sample OpenAPI specification in dry-run mode.
+# with a sample OpenAPI specification.
+#
+# Publishing Mode (controlled by repository variable):
+#   - Default: dry-run mode (tests generation and build only)
+#   - Set vars.TEST_NPM_PUBLISH = "true" to enable actual npm publishing
+#   - When publishing is enabled, the test package is unpublished after success
+#
+# To enable publish testing:
+#   1. Go to Settings > Secrets and variables > Actions > Variables
+#   2. Add repository variable: TEST_NPM_PUBLISH = "true"
+#   3. Bump TEST_PACKAGE_VERSION (npm doesn't allow reusing unpublished versions)
 #
 # Repository: kubev2v/migration-planner-client-generator
 # =============================================================================
@@ -16,15 +26,61 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Required for npm Trusted Publishing (OIDC)
+permissions:
+  id-token: write
+  contents: read
+
+# Test package configuration (keep in sync with 'with:' inputs below)
+env:
+  TEST_PACKAGE_NAME: "@redhat-ecosystem-engineering/petstore-client-test"
+  TEST_PACKAGE_VERSION: "0.0.7"
+
 jobs:
   test-generation:
     name: Test Client Generation
     uses: ./.github/workflows/generate-and-publish.yml
+    # Note: These values must match env.TEST_PACKAGE_* above (env not available in 'with:')
     with:
       openapi-spec-url: "https://petstore3.swagger.io/api/v3/openapi.json"
-      package-name: "@test/petstore-client"
-      package-version: "0.0.1-test"
-      dry-run: true
-    secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-      ALLOWED_REPOS: ${{ secrets.ALLOWED_REPOS }}
+      package-name: "@redhat-ecosystem-engineering/petstore-client-test"
+      package-version: "0.0.7"
+      # Feature toggle: set vars.TEST_NPM_PUBLISH = "true" to enable actual publishing
+      # Default is dry-run mode to avoid npm rate limits and accidental publishes
+      dry-run: ${{ vars.TEST_NPM_PUBLISH != 'true' }}
+    # Note: 'secrets: inherit' is required to pass the GITHUB_TOKEN with id-token
+    # permission to the reusable workflow for npm Trusted Publishing (OIDC)
+    secrets: inherit
+
+  # ===========================================================================
+  # Cleanup: Remove test package from npm
+  # ===========================================================================
+  # This job runs only when actual publishing is enabled (vars.TEST_NPM_PUBLISH).
+  # npm allows unpublish within 72 hours of publishing.
+  # ===========================================================================
+  cleanup:
+    name: Cleanup Test Package
+    needs: test-generation
+    runs-on: ubuntu-latest
+    # Only run cleanup if publishing was enabled AND test-generation succeeded
+    if: ${{ vars.TEST_NPM_PUBLISH == 'true' && success() }}
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Unpublish test package
+        run: |
+          echo "🧹 Cleaning up test package..."
+          echo "   Package: ${{ env.TEST_PACKAGE_NAME }}@${{ env.TEST_PACKAGE_VERSION }}"
+          
+          # Unpublish the specific version
+          npm unpublish "${{ env.TEST_PACKAGE_NAME }}@${{ env.TEST_PACKAGE_VERSION }}" --force
+          
+          echo "✅ Test package removed from npm"
+        env:
+          # Fallback for local testing - npm prefers OIDC when available
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
