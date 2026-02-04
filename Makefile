@@ -17,6 +17,9 @@ help:
 	@echo "  make clean          Remove generated artifacts"
 	@echo "  make check-act      Verify act-cli is installed"
 	@echo ""
+	@echo "Variables:"
+	@echo "  GITHUB_REPOSITORY   Override github.repository context (default: kubev2v/migration-planner-client-generator)"
+	@echo ""
 	@echo "Prerequisites:"
 	@echo "  - act-cli: brew install act"
 	@echo "  - Docker: must be running"
@@ -54,11 +57,15 @@ check-act:
 # Testing
 # -----------------------------------------------------------------------------
 
+# Default repository for mocking github.repository context
+GITHUB_REPOSITORY ?= kubev2v/migration-planner-client-generator
+
 # Common act flags for Docker-in-Docker support
 ACT_FLAGS = --secret-file .secrets \
 	--bind \
 	--container-options "--privileged" \
 	--container-daemon-socket /var/run/docker.sock \
+	--var GITHUB_REPOSITORY=$(GITHUB_REPOSITORY) \
 	-P ubuntu-latest=catthehacker/ubuntu:act-latest
 
 # Run test workflow
