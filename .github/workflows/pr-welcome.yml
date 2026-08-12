@@ -1,0 +1,141 @@
+# Reusable workflow: PR Welcome Comment with Label Checkboxes
+#
+# Posts a welcome comment when a non-draft PR is opened (including forks),
+# with checkboxes that add/remove labels when toggled.
+#
+# Usage — add this to each consuming repo as .github/workflows/pr-welcome.yml:
+#
+#   name: PR Welcome
+#   on:
+#     pull_request_target:
+#       types: [opened, ready_for_review]
+#     issue_comment:
+#       types: [edited]
+#   jobs:
+#     welcome:
+#       uses: kubev2v/migration-planner-workflows/.github/workflows/pr-welcome.yml@main
+#       permissions:
+#         pull-requests: write
+#         issues: write
+
+name: PR Welcome
+
+on:
+  workflow_call: {}
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Welcome comment — posted once when a non-draft PR is opened
+  # -----------------------------------------------------------------------
+  welcome-comment:
+    if: >-
+      github.event_name == 'pull_request_target'
+      && (github.event.action == 'opened' || github.event.action == 'ready_for_review')
+      && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: 🔍 Check for existing welcome comment
+        id: check
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                per_page: 100,
+              }
+            );
+            const exists = comments.some(c => c.body.includes('<!-- pr-welcome-bot -->'));
+            core.setOutput('exists', exists);
+
+      - name: 💬 Post welcome comment
+        if: steps.check.outputs.exists != 'true'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const author = context.payload.pull_request.user.login;
+            const body = [
+              '<!-- pr-welcome-bot -->',
+              `Thanks for your contribution, @${author}! 🎉`,
+              '',
+              'If any of the following apply, check the box — the matching label will be added automatically. Uncheck to remove it.',
+              '',
+              '- [ ] **Work in progress** — PR is not ready for review (`work-in-progress`)',
+              '- [ ] **Hold** — PR can\'t be merged, shouldn\'t be reviewed (`on-hold`)',
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });
+
+  # -----------------------------------------------------------------------
+  # Label sync — adds/removes labels when checkboxes are toggled
+  # -----------------------------------------------------------------------
+  sync-labels:
+    if: github.event_name == 'issue_comment' && github.event.action == 'edited'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-welcome-labels-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: 🏷️ Sync labels from checkboxes
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            if (!context.payload.issue.pull_request) return;
+            if (context.payload.comment.user.login !== 'github-actions[bot]') return;
+            if (!context.payload.comment.body.includes('<!-- pr-welcome-bot -->')) return;
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.issue.number;
+
+            const { data: comment } = await github.rest.issues.getComment({
+              owner, repo, comment_id: context.payload.comment.id,
+            });
+            const body = comment.body;
+
+            const CHECKBOXES = [
+              {
+                checked: /- \[x\] \*\*Work in progress\*\*/.test(body),
+                label: 'work-in-progress',
+                color: 'fbca04',
+                description: 'PR is not ready for review',
+              },
+              {
+                checked: /- \[x\] \*\*Hold\*\*/.test(body),
+                label: 'on-hold',
+                color: 'e11d48',
+                description: 'PR cannot be merged and should not be reviewed',
+              },
+            ];
+
+            const { data: currentLabels } = await github.rest.issues.listLabelsOnIssue({
+              owner, repo, issue_number: prNumber,
+            });
+            const applied = new Set(currentLabels.map(l => l.name));
+
+            for (const { checked, label, color, description } of CHECKBOXES) {
+              if (checked && !applied.has(label)) {
+                try {
+                  await github.rest.issues.getLabel({ owner, repo, name: label });
+                } catch {
+                  await github.rest.issues.createLabel({ owner, repo, name: label, color, description });
+                }
+                await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: [label] });
+              } else if (!checked && applied.has(label)) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name: label });
+              }
+            }
