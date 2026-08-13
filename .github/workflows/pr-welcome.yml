@@ -14,6 +14,8 @@
 #   jobs:
 #     welcome:
 #       uses: kubev2v/migration-planner-workflows/.github/workflows/pr-welcome.yml@main
+#       with:
+#         skip-authors: '["dependabot[bot]"]'  # optional
 #       permissions:
 #         pull-requests: write
 #         issues: write
@@ -21,7 +23,13 @@
 name: PR Welcome
 
 on:
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      skip-authors:
+        required: false
+        type: string
+        default: '[]'
+        description: "JSON array of GitHub usernames to skip (e.g. bots)"
 
 jobs:
   # -----------------------------------------------------------------------
@@ -37,7 +45,28 @@ jobs:
       pull-requests: write
       issues: write
     steps:
+      - name: 🤖 Check if author should be skipped
+        id: skip
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          SKIP_AUTHORS_JSON: ${{ inputs.skip-authors }}
+        with:
+          script: |
+            const raw = process.env.SKIP_AUTHORS_JSON || '[]';
+            const skipAuthors = JSON.parse(raw);
+            if (!Array.isArray(skipAuthors)) {
+              core.setFailed('skip-authors must be a JSON array');
+              return;
+            }
+            const author = context.payload.pull_request.user.login;
+            const skip = skipAuthors.includes(author);
+            if (skip) {
+              core.info(`Skipping welcome comment for author: ${author}`);
+            }
+            core.setOutput('skip', skip);
+
       - name: 🔍 Check for existing welcome comment
+        if: steps.skip.outputs.skip != 'true'
         id: check
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
@@ -55,7 +84,7 @@ jobs:
             core.setOutput('exists', exists);
 
       - name: 💬 Post welcome comment
-        if: steps.check.outputs.exists != 'true'
+        if: steps.skip.outputs.skip != 'true' && steps.check.outputs.exists != 'true'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
@@ -132,7 +161,11 @@ jobs:
                 try {
                   await github.rest.issues.getLabel({ owner, repo, name: label });
                 } catch {
-                  await github.rest.issues.createLabel({ owner, repo, name: label, color, description });
+                  try {
+                    await github.rest.issues.createLabel({ owner, repo, name: label, color, description });
+                  } catch (e) {
+                    if (e.status !== 422) throw e;
+                  }
                 }
                 await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: [label] });
               } else if (!checked && applied.has(label)) {
