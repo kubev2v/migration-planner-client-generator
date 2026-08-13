@@ -66,8 +66,8 @@ jobs:
               '',
               'If any of the following apply, check the box — the matching label will be added automatically. Uncheck to remove it.',
               '',
-              '- [ ] **Work in progress** — PR is not ready for review (`work-in-progress`)',
-              '- [ ] **Hold** — PR can\'t be merged, shouldn\'t be reviewed (`on-hold`)',
+              '- [ ] **Work in progress** — PR is not ready for review (`auto-label/work-in-progress`)',
+              '- [ ] **Hold** — PR can\'t be merged, shouldn\'t be reviewed (`auto-label/on-hold`)',
             ].join('\n');
 
             await github.rest.issues.createComment({
@@ -110,13 +110,13 @@ jobs:
             const CHECKBOXES = [
               {
                 checked: /- \[x\] \*\*Work in progress\*\*/.test(body),
-                label: 'work-in-progress',
+                label: 'auto-label/work-in-progress',
                 color: 'fbca04',
                 description: 'PR is not ready for review',
               },
               {
                 checked: /- \[x\] \*\*Hold\*\*/.test(body),
-                label: 'on-hold',
+                label: 'auto-label/on-hold',
                 color: 'e11d48',
                 description: 'PR cannot be merged and should not be reviewed',
               },
