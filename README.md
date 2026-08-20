@@ -5,6 +5,7 @@ A repository providing reusable GitHub Actions workflows and composite actions f
 ## Overview
 
 This repository contains:
+
 - **Reusable Workflows**: Workflows that can be called from other repositories
 - **Composite Actions**: Reusable action definitions that can be referenced by other projects
 
@@ -33,11 +34,11 @@ name: Update API Client Package
 on:
   push:
     branches: [main]
-    paths: ['api/openapi.yaml']
+    paths: ["api/openapi.yaml"]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to publish'
+        description: "Version to publish"
         required: true
 
 # Required for npm Trusted Publishing (OIDC)
@@ -58,13 +59,13 @@ jobs:
 
 #### Inputs
 
-| Input | Required | Default | Description |
-|-------|----------|---------|-------------|
-| `openapi-spec-url` | Yes | - | URL to the OpenAPI specification file |
-| `package-name` | Yes | - | npm package name (e.g., `@scope/package-name`) |
-| `package-version` | Yes | - | Package version to publish (semver) |
-| `npm-registry` | No | `https://registry.npmjs.org` | npm registry URL |
-| `dry-run` | No | `false` | Skip npm publish (for testing) |
+| Input              | Required | Default                      | Description                                    |
+| ------------------ | -------- | ---------------------------- | ---------------------------------------------- |
+| `openapi-spec-url` | Yes      | -                            | URL to the OpenAPI specification file          |
+| `package-name`     | Yes      | -                            | npm package name (e.g., `@scope/package-name`) |
+| `package-version`  | Yes      | -                            | Package version to publish (semver)            |
+| `npm-registry`     | No       | `https://registry.npmjs.org` | npm registry URL                               |
+| `dry-run`          | No       | `false`                      | Skip npm publish (for testing)                 |
 
 #### npm Publishing Authentication
 
@@ -80,20 +81,92 @@ This workflow uses **npm Trusted Publishing (OIDC)** exclusively — no long-liv
 
 The workflow uses hardcoded generator settings that **cannot be modified by callers**:
 
-| Setting | Value |
-|---------|-------|
-| Generator | `typescript-fetch` |
-| Output Directory | `generated-client` |
-| `ensureUniqueParams` | `true` |
-| `supportsES6` | `true` |
-| `withInterfaces` | `true` |
-| `importFileExtension` | `.js` |
+| Setting               | Value              |
+| --------------------- | ------------------ |
+| Generator             | `typescript-fetch` |
+| Output Directory      | `generated-client` |
+| `ensureUniqueParams`  | `true`             |
+| `supportsES6`         | `true`             |
+| `withInterfaces`      | `true`             |
+| `importFileExtension` | `.js`              |
 
 These settings match the configuration in [kubev2v/migration-planner-ui](https://github.com/kubev2v/migration-planner-ui).
 
 ---
 
-### 2. Determine Version Action
+### 2. Build and Publish npm Package Workflow
+
+**Path:** `.github/workflows/build-and-publish-package.yml`
+
+A reusable workflow that builds an existing package living in the **calling
+repository** and publishes it to npm. Unlike the OpenAPI Client Generator
+(which generates a client from a spec URL), this publishes a package whose
+source is already in your repo — e.g. a hand-written workspace package.
+
+#### Usage
+
+```yaml
+name: Publish my package
+
+on:
+  push:
+    branches: [main, stable]
+    paths: ["packages/my-lib/**"]
+    tags: ["v*"]
+
+# Required for npm Trusted Publishing (OIDC)
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: version
+        uses: kubev2v/migration-planner-workflows/.github/actions/determine-version@main
+
+  publish:
+    needs: version
+    uses: kubev2v/migration-planner-workflows/.github/workflows/build-and-publish-package.yml@main
+    with:
+      package-name: "@your-scope/my-lib"
+      package-version: ${{ needs.version.outputs.version }}
+      working-directory: packages/my-lib
+      build-command: "yarn workspace @your-scope/my-lib build"
+    secrets: inherit
+```
+
+#### Inputs
+
+| Input               | Required | Default                      | Description                                                            |
+| ------------------- | -------- | ---------------------------- | ---------------------------------------------------------------------- |
+| `package-name`      | Yes      | -                            | npm package name (e.g., `@scope/package-name`)                         |
+| `package-version`   | Yes      | -                            | Package version to publish (semver)                                    |
+| `working-directory` | No       | `.`                          | Path to the package to publish (the dir containing its `package.json`) |
+| `install-command`   | No       | `yarn install --immutable`   | Command run at the repo root to install dependencies                   |
+| `build-command`     | No       | `''`                         | Command run at the repo root to build the package (empty to skip)      |
+| `node-version`      | No       | `24`                         | Node.js version                                                        |
+| `npm-registry`      | No       | `https://registry.npmjs.org` | npm registry URL                                                       |
+| `dry-run`           | No       | `false`                      | Skip npm publish (for testing)                                         |
+
+#### npm Publishing Authentication
+
+Same as the OpenAPI Client Generator: **npm Trusted Publishing (OIDC)** only —
+`id-token: write` in the caller, `secrets: inherit`, and a
+[Trusted Publisher](https://docs.npmjs.com/trusted-publishers) configured on
+npmjs.com for the package, pointing at **this** workflow file. Prerelease
+versions (those with a hyphen, e.g. `0.20.3-abc123`) are published under a
+matching dist-tag so they never move `latest`.
+
+---
+
+### 3. Determine Version Action
 
 **Path:** `.github/actions/determine-version/action.yml`
 
@@ -108,7 +181,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Required for tag history
+          fetch-depth: 0 # Required for tag history
 
       - name: Determine version
         id: version
@@ -121,15 +194,15 @@ jobs:
 
 #### Outputs
 
-| Output | Description |
-|--------|-------------|
+| Output    | Description                                                  |
+| --------- | ------------------------------------------------------------ |
 | `version` | Semver version string (e.g. `1.0.0` or `1.0.0-abc123def456`) |
 
 #### Versioning Logic
 
 - **On tag push**: Uses tag name without leading 'v' (e.g. `v1.0.0` → `1.0.0`)
 - **On main branch**: Latest tag + short SHA (e.g. `1.0.0-abc123def456`)
-- **On release-* branches**: Latest reachable tag + short SHA
+- **On release-\* branches**: Latest reachable tag + short SHA
 - **No tags found**: Defaults to `0.0.0-abc123def456`
 
 ---
@@ -155,17 +228,18 @@ make clean
 
 #### Make Targets
 
-| Command | Description |
-|---------|-------------|
-| `make test` | Run workflow in dry-run mode via act (tests generation/build only) |
-| `make test-verbose` | Run workflow with verbose output |
-| `make clean` | Remove generated artifacts |
+| Command             | Description                                                        |
+| ------------------- | ------------------------------------------------------------------ |
+| `make test`         | Run workflow in dry-run mode via act (tests generation/build only) |
+| `make test-verbose` | Run workflow with verbose output                                   |
+| `make clean`        | Remove generated artifacts                                         |
 
 #### CI Feature Toggle
 
 The test workflow runs in **dry-run mode by default** to avoid npm rate limits.
 
 To enable actual npm publishing in CI:
+
 1. Go to Settings > Secrets and variables > Actions > Variables
 2. Add: `TEST_NPM_PUBLISH` = `true`
 3. Bump `TEST_PACKAGE_VERSION` in `test.yml` before each test
@@ -181,8 +255,9 @@ When enabled, test packages are automatically unpublished after successful publi
 │   │   └── determine-version/         # Composite action for version computation
 │   │       └── action.yml
 │   └── workflows/
-│       ├── generate-and-publish.yml   # Reusable workflow for OpenAPI clients
-│       └── test.yml                   # CI test workflow
+│       ├── generate-and-publish.yml       # Reusable workflow for OpenAPI clients
+│       ├── build-and-publish-package.yml  # Reusable workflow to publish an existing package
+│       └── test.yml                       # CI test workflow
 ├── .actrc                             # act-cli configuration
 ├── .gitignore
 ├── Makefile                           # Local testing commands

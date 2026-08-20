@@ -1,0 +1,180 @@
+# =============================================================================
+# Reusable Workflow: Build and Publish an npm Package
+# =============================================================================
+# Builds an existing package that lives in the CALLING repository and publishes
+# it to npm. Unlike generate-and-publish.yml (which generates an OpenAPI client
+# from a spec URL), this publishes a package whose source is already in the
+# caller's repo — e.g. a hand-written workspace package.
+#
+# Publishing Authentication:
+#   Uses npm Trusted Publishing (OIDC) exclusively — no long-lived tokens.
+#   - Requires id-token: write permission in the calling workflow
+#   - Requires a Trusted Publisher configured on npmjs.com for the package,
+#     pointing at THIS workflow file
+#   - Calling workflow must use 'secrets: inherit'
+#   - See: https://docs.npmjs.com/trusted-publishers
+#
+# Repository: kubev2v/migration-planner-workflows
+# =============================================================================
+
+name: Build and Publish npm Package
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        description: 'npm package name (e.g., @scope/package-name)'
+        required: true
+        type: string
+      package-version:
+        description: 'Package version to publish (semver)'
+        required: true
+        type: string
+      working-directory:
+        description: 'Path to the package to publish (the dir containing its package.json)'
+        required: false
+        type: string
+        default: '.'
+      install-command:
+        description: 'Command run at the repo root to install dependencies'
+        required: false
+        type: string
+        default: 'yarn install --immutable'
+      build-command:
+        description: 'Command run at the repo root to build the package (empty to skip)'
+        required: false
+        type: string
+        default: ''
+      node-version:
+        description: 'Node.js version'
+        required: false
+        type: string
+        default: '24'
+      npm-registry:
+        description: 'npm registry URL'
+        required: false
+        type: string
+        default: 'https://registry.npmjs.org'
+      dry-run:
+        description: 'Skip npm publish (for testing)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build-and-publish:
+    name: Build & Publish Package
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for npm Trusted Publishing (OIDC)
+      contents: read
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Check out the calling repository
+      # -----------------------------------------------------------------------
+      - name: Check out caller repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # -----------------------------------------------------------------------
+      # Step 2: Setup Node.js environment
+      # -----------------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+          registry-url: ${{ inputs.npm-registry }}
+
+      # Enable Corepack so the repo's pinned package manager (e.g. Yarn 4) is used
+      - name: Enable Corepack
+        run: corepack enable
+
+      # -----------------------------------------------------------------------
+      # Step 3: Install dependencies and build the package
+      # -----------------------------------------------------------------------
+      - name: Install dependencies
+        run: ${{ inputs.install-command }}
+
+      - name: Build package
+        if: ${{ inputs.build-command != '' }}
+        run: ${{ inputs.build-command }}
+
+      # -----------------------------------------------------------------------
+      # Step 4: Pin the version to publish
+      # -----------------------------------------------------------------------
+      - name: Set package version
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          echo "📦 Setting ${{ inputs.package-name }} version to ${{ inputs.package-version }}"
+          npm pkg set version="${{ inputs.package-version }}"
+          cat package.json | jq '{name, version, license, exports, files}'
+
+      # -----------------------------------------------------------------------
+      # Step 5: Publish to npm (unless dry-run)
+      # Uses OIDC Trusted Publishing exclusively.
+      #
+      # Why we overwrite NPM_CONFIG_USERCONFIG:
+      #   actions/setup-node with registry-url creates a .npmrc containing an
+      #   _authToken placeholder. When NODE_AUTH_TOKEN is unset, npm treats it
+      #   as "auth configured but invalid" and fails with ENEEDAUTH instead of
+      #   falling through to OIDC. Overwriting with just the registry line
+      #   strips token auth so npm proceeds to Trusted Publishing.
+      # -----------------------------------------------------------------------
+      - name: Publish to npm
+        if: ${{ inputs.dry-run != true }}
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          # Strip token auth from .npmrc so npm falls through to OIDC
+          echo "registry=${{ inputs.npm-registry }}" > "$NPM_CONFIG_USERCONFIG"
+
+          VERSION="${{ inputs.package-version }}"
+          PUBLISH_ARGS="--access public"
+
+          # Detect prerelease: a hyphen after the patch number signals a
+          # prerelease per semver (e.g. 1.0.0-alpha, 0.20.3-abc123def456).
+          # npm refuses to publish prereleases without an explicit --tag to
+          # prevent accidentally moving the "latest" dist-tag.
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE_ID="${VERSION#*-}"          # alpha.1, beta, abc123…
+            PRERELEASE_TAG="${PRERELEASE_ID%%.*}"  # alpha, beta, abc123…
+            PUBLISH_ARGS+=" --tag ${PRERELEASE_TAG}"
+            echo "📌 Prerelease detected — publishing with dist-tag '${PRERELEASE_TAG}'"
+          fi
+
+          echo "🚀 Publishing ${{ inputs.package-name }}@${VERSION} to npm..."
+          npm publish $PUBLISH_ARGS
+          echo "✅ Package published successfully!"
+
+      - name: Dry Run Summary
+        if: ${{ inputs.dry-run == true }}
+        run: |
+          echo "🧪 DRY RUN MODE - Package was NOT published"
+          echo ""
+          echo "Summary:"
+          echo "  Package: ${{ inputs.package-name }}"
+          echo "  Version: ${{ inputs.package-version }}"
+          echo "  Working dir: ${{ inputs.working-directory }}"
+          echo ""
+          echo "To publish for real, re-run without the dry-run flag."
+
+      # -----------------------------------------------------------------------
+      # Step 6: Create summary
+      # -----------------------------------------------------------------------
+      - name: Job Summary
+        run: |
+          echo "## 📦 Package Publish Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ inputs.npm-registry }}" == "https://registry.npmjs.org" ]]; then
+            echo "| Package Name | [\`${{ inputs.package-name }}\`](https://www.npmjs.com/package/${{ inputs.package-name }}) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Package Name | \`${{ inputs.package-name }}\` |" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "| Version | \`${{ inputs.package-version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Working Dir | \`${{ inputs.working-directory }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dry Run | ${{ inputs.dry-run }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered By | @${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source Repo | \`${{ github.repository }}\` |" >> $GITHUB_STEP_SUMMARY
