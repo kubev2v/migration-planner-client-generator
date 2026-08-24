@@ -1,0 +1,125 @@
+# Reusable workflow: PR Auto-Approval
+#
+# Approves PRs when the author is allowed to modify the changed files.
+# Uses a user-to-paths mapping with wildcard support for shared files.
+#
+# Usage — add this to each consuming repo as .github/workflows/auto-approve.yml:
+#
+#   name: Auto-approve PRs
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, ready_for_review]
+#   jobs:
+#     approve:
+#       uses: kubev2v/migration-planner-workflows/.github/workflows/pr-approval.yml@main
+#       with:
+#         user_path_permissions: |
+#           migration-bot:
+#             - 'migrations/**'
+#             - 'config/migrations.json'
+#           docs-bot:
+#             - 'docs/**'
+#             - '*.md'
+#           '*':
+#             - 'README.md'
+#             - 'LICENSE'
+#       secrets:
+#         APP_ID: ${{ secrets.MIGRATION_APP_ID }}
+#         APP_PRIVATE_KEY: ${{ secrets.MIGRATION_APP_PRIVATE_KEY }}
+#       permissions:
+#         pull-requests: write
+
+name: PR Auto-Approval
+
+on:
+  workflow_call:
+    inputs:
+      user_path_permissions:
+        required: true
+        type: string
+        description: 'YAML map of users to allowed path patterns. Use "*" key for paths available to all users. Users get their specific paths plus "*" paths (additive).'
+    secrets:
+      APP_ID:
+        required: true
+      APP_PRIVATE_KEY:
+        required: true
+
+jobs:
+  approve-pr:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Check author permissions and validate paths
+        id: check
+        uses: actions/github-script@v7
+        env:
+          USER_PATH_PERMISSIONS: ${{ inputs.user_path_permissions }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const yaml = require('js-yaml');
+            const { minimatch } = require('minimatch');
+
+            // Parse permissions YAML
+            const permissionsYaml = process.env.USER_PATH_PERMISSIONS;
+            const permissions = yaml.load(permissionsYaml);
+
+            // Get PR author
+            const author = context.payload.pull_request.user.login;
+            core.info(`PR author: ${author}`);
+
+            // Build combined allowed paths for this author
+            const userPaths = permissions[author] || [];
+            const wildcardPaths = permissions['*'] || [];
+            const allowedPaths = [...userPaths, ...wildcardPaths];
+
+            if (allowedPaths.length === 0) {
+              core.info(`Author ${author} has no permissions defined`);
+              core.setOutput('approved', 'false');
+              return;
+            }
+
+            core.info(`Allowed paths for ${author}: ${JSON.stringify(allowedPaths)}`);
+
+            // Get list of changed files
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+
+            const changedFiles = files.map(f => f.filename);
+            core.info(`Changed files: ${JSON.stringify(changedFiles)}`);
+
+            // Check if all changed files match allowed patterns
+            const unauthorized = changedFiles.filter(file => {
+              return !allowedPaths.some(pattern => minimatch(file, pattern));
+            });
+
+            if (unauthorized.length > 0) {
+              core.info(`Unauthorized files: ${JSON.stringify(unauthorized)}`);
+              core.setOutput('approved', 'false');
+            } else {
+              core.info('All files authorized for this author');
+              core.setOutput('approved', 'true');
+            }
+
+      - name: Approve PR
+        if: steps.check.outputs.approved == 'true'
+        run: |
+          gh pr review "$PR_URL" --approve --body "Approved automatically by central review workflow."
+          gh pr merge "$PR_URL" --auto --rebase
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
