@@ -50,7 +50,7 @@ jobs:
     if: github.event.pull_request.draft == false
     permissions:
       pull-requests: write
-      contents: read
+      contents: write
 
     steps:
       - name: Generate GitHub App Token
@@ -59,6 +59,8 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Check author permissions and validate paths
         id: check
